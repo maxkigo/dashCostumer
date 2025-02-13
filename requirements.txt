@@ -1,0 +1,9 @@
+pymongo
+pandas
+streamlit
+plotly
+Pillow
+requests
+pymysql
+paramiko
+sshtunnel
