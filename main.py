@@ -47,15 +47,24 @@ ssh_host = st.secrets["ssh"]["ssh_host"]
 ssh_user = st.secrets["ssh"]["ssh_user"]
 ssh_port = st.secrets["ssh"]["ssh_port"]
 
-# Date input for the query
-d = st.date_input("Fecha de Consulta",
-                  value=[datetime.date(2025, 1, 1), datetime.date.today()],
+coldate, colphone = st.columns(2)
+
+with coldate:
+
+    # Date input for the query
+    d = st.date_input("Fecha de Consulta",
+                  value=[datetime.date(2024, 1, 1), datetime.date.today()],
                   min_value=datetime.date(2024, 1, 1),
                   max_value=datetime.date.today(),
                   format="DD/MM/YYYY")
+    d
 
-# Phone number for the query
-number = st.number_input("Ingresar el número del Usuario:",
+    star_date = f'{d[0]} 00:00:00'
+    end_date = f'{d[1]} 23:59:59'
+
+with colphone:
+    # Phone number for the query
+    number = st.number_input("Ingresar el número del Usuario:",
                          value=2213500061,
                          step=1,
                          format="%d")
@@ -89,50 +98,162 @@ tunnel = create_ssh_tunnel()
 conn = create_db_connection(tunnel)
 
 @st.cache_data
-def accountUser(phonenumber, _conn):
+def useridLocate(phonenumber, _conn):
     query = f'''
-        SELECT UP.firstname AS nombre, UP.lastname AS apellido, UP.phonenumber, UP.facebookemail, CDU.accountnumber, CDU.funds, CDU.currency
+    SELECT userid
+    FROM CARGOMOVIL_PD.SEC_USER_PROFILE
+    WHERE phonenumber = {phonenumber};
+    '''
+    return pd.read_sql_query(query, _conn)
+
+userid = useridLocate(number, conn)
+userid = userid.values[0][0]
+
+@st.cache_data
+def accountUser(userid, _conn):
+    query = f'''
+        SELECT UP.firstname AS nombre, UP.lastname AS apellido, UP.phonenumber, UP.facebookemail, CDU.funds, CDU.currency
         FROM CARGOMOVIL_PD.CDX_USER_ACCOUNT CDU
         JOIN CARGOMOVIL_PD.SEC_USER_PROFILE UP ON CDU.userid = UP.userid
-        WHERE UP.phonenumber = {phonenumber};
+        WHERE UP.userid = {userid};
     '''
     return pd.read_sql_query(query, _conn)
 
 @st.cache_data
-def cardsUser(phonenumber, _conn):
+def cardsUser(userid, _conn):
     query = f'''
     SELECT UP.phonenumber, SQ_UC.brand, SQ_UC.last_4, SQ_UC.card_status, 
     SQ_UC.gateway, SQ_UC.creation_date 
     FROM CARGOMOVIL_PD.uc_users_cards SQ_UC
     JOIN CARGOMOVIL_PD.SEC_USER_PROFILE UP ON SQ_UC.user_id = UP.userid
-    WHERE UP.phonenumber = {phonenumber};
+    WHERE UP.userid = {userid};
+    '''
+    return pd.read_sql_query(query, _conn)
+
+@st.cache_data
+def vehicleUser(userid, _conn):
+    query = f'''
+    SELECT V.ownerid AS userid, V.licenseplate, (CASE WHEN V.status = 1 THEN 'active' ELSE 'inactive' END) AS status,
+    O.modelname, U.brandname
+    FROM CARGOMOVIL_PD.PKM_VEHICLE V
+    JOIN CARGOMOVIL_PD.PKM_VEHICLE_MODELS_CAT O ON V.modelid = O.id 
+    JOIN CARGOMOVIL_PD.PKM_VEHICLE_BRANDS_CAT U ON O.brandid = U.id
+    WHERE V.ownerid = {userid}
+    ORDER BY status
+    ;
     '''
     return pd.read_sql_query(query, _conn)
 
 
 @st.cache_data
-def lastEdOperations(phonenumber, _conn):
+def lastEdOperations(userid, _conn, startDate=star_date, endDate=end_date):
     query = f'''
         SELECT U.userid, U.phonenumber, T.transactionid, Z.parkinglotname,
-               T.total, CONVERT_TZ(T.paymentdate, 'UTC', 'America/Mexico_City') AS date,
+               T.subtotal, T.tax, T.fee, T.total, 
+               CASE
+                WHEN T.paymentType = 1 THEN 'NAP'
+                WHEN T.paymentType = 2 THEN 'SMS'
+                WHEN T.paymentType = 3 THEN 'TC/TD'
+                WHEN T.paymentType = 4 THEN 'SALDO'
+                WHEN T.paymentType = 5 THEN 'ATM'
+                ELSE ''
+                END AS paymentType,
+               TIMESTAMPDIFF(MINUTE, CONVERT_TZ(I.checkindate, 'UTC', 'America/Mexico_City'), 
+                         CONVERT_TZ(O.checkoutdate, 'UTC', 'America/Mexico_City')) AS paidtimeminutes,
+               CONVERT_TZ(T.paymentdate, 'UTC', 'America/Mexico_City') AS date,
                CONVERT_TZ(I.checkindate, 'UTC', 'America/Mexico_City') AS checkindate, 
-               CONVERT_TZ(O.checkoutdate, 'UTC', 'America/Mexico_City') AS checkoutdate
+               CONVERT_TZ(O.checkoutdate, 'UTC', 'America/Mexico_City') AS checkoutdate,
+               (CASE WHEN PQR.isvalidated = 1 THEN 'Validated'
+        WHEN PQR.isvalidated = 0 THEN 'No Validated' ELSE NULL END) AS promotionApplied,
+        PCAT.description AS promotiontype, (CASE WHEN PQR.status = 1 THEN 'Open Cicle' ELSE 'Close Cicle' END) AS status
         FROM CARGOMOVIL_PD.PKM_SMART_QR_TRANSACTIONS T
         JOIN CARGOMOVIL_PD.PKM_SMART_QR_CHECKIN I ON T.checkinid = I.id
         JOIN CARGOMOVIL_PD.PKM_SMART_QR_CHECKOUT O ON T.checkoutid = O.id
         JOIN CARGOMOVIL_PD.PKM_PARKING_LOT_CAT Z ON T.parkinglotid = Z.id
         JOIN CARGOMOVIL_PD.SEC_USER_PROFILE U ON T.userid = U.userid
-        WHERE U.phonenumber = {phonenumber} AND DATE(T.paymentdate) BETWEEN '{d[0]}' AND '{d[1]}'
+        LEFT JOIN CARGOMOVIL_PD.PKM_SMART_QR_PROMOTIONS PP ON T.qrcodeid = PP.qrcodeid
+        LEFT JOIN CARGOMOVIL_PD.GEN_PROMOTION_TYPE_CAT PCAT ON PP.promotionid = PCAT.id
+        LEFT JOIN CARGOMOVIL_PD.PKM_SMART_QR PQR ON T.qrcodeid = PQR.id
+        WHERE U.userid = {userid} AND T.paymentdate BETWEEN '{startDate}' AND '{endDate}'
         ORDER BY T.paymentdate DESC;
     '''
     return pd.read_sql_query(query, _conn)
+
+@st.cache_data
+def movementsUser(phonenumber, _conn):
+    query = f'''
+    CALL usp_metabase_user_account_movements(
+      2,
+     NULL,
+     NULL,
+     '{phonenumber}'  --  = El número que introducen
+   ,NULL);
+    '''
+    return pd.read_sql_query(query, _conn)
+
+@st.cache_data
+def lastPVOperations(userid, _conn, startDate=star_date, endDate=end_date):
+    query = f'''
+    SELECT U.userid, U.phonenumber, 
+    CASE
+                WHEN T.paymentType = 1 THEN 'NAP'
+                WHEN T.paymentType = 2 THEN 'SMS'
+                WHEN T.paymentType = 3 THEN 'TC/TD'
+                WHEN T.paymentType = 4 THEN 'SALDO'
+                WHEN T.paymentType = 5 THEN 'ATM'
+                ELSE ''
+                END AS paymentType,
+    T.licenseplate, T.transactionid, Z.name, T.totalamount
+    FROM CARGOMOVIL_PD.PKM_TRANSACTION T
+    JOIN CARGOMOVIL_PD.SEC_USER_PROFILE U ON T.userid = U.userid
+    JOIN CARGOMOVIL_PD.PKM_PARKING_METER_ZONE_CAT Z ON T.zoneid = Z.id
+    WHERE U.userid = {userid} AND T.date BETWEEN '{startDate}' AND '{endDate}'
+    '''
+    return pd.read_sql_query(query, _conn)
+
+@st.cache_data
+def pensionsUser(userid, _conn):
+    query = f'''
+    SELECT Z.parkinglotname, pp.phonenumber, pp.startdate, pp.enddate, pp.status, pp.description
+    FROM CARGOMOVIL_PD.PKM_PARKING_LOT_LODGINGS pp
+    JOIN CARGOMOVIL_PD.PKM_PARKING_LOT_CAT Z ON pp.parkinglotid = Z.id
+    WHERE pp.userid = {userid}
+    '''
+    return pd.read_sql_query(query, _conn)
+
+@st.cache_data
+def errorsUser(userid, _conn):
+    query = f'''
+    SELECT 
+    e.id AS log_id,
+    p.parkinglotname AS parking_name,
+    e.userid AS user_id,
+    JSON_UNQUOTE(JSON_EXTRACT(e.metadata, '$.user.username')) AS username,
+    e.eventtype AS event_type,
+    JSON_UNQUOTE(JSON_EXTRACT(e.metadata, '$.qrCode')) AS qrcode,
+    JSON_EXTRACT(e.metadata, '$.error.code') AS error_code,
+    JSON_EXTRACT(e.metadata, '$.error.status') AS error_status,
+    JSON_UNQUOTE(JSON_EXTRACT(e.metadata, '$.error.message')) AS error_message,
+    JSON_EXTRACT(e.metadata, '$.gateId') AS gate_id,
+    e.eventtimestamp AS error_date
+FROM 
+    CARGOMOVIL_PD.PKM_PARKING_LOT_EVENTS e
+JOIN 
+    CARGOMOVIL_PD.PKM_PARKING_LOT_CAT p ON e.parkinglotid = p.id
+WHERE 
+    e.eventtype LIKE '%error%' 
+    AND e.userid = {userid}
+    AND e.eventtimestamp BETWEEN '{star_date}' AND '{end_date}'; 
+    '''
+    return pd.read_sql_query(query, _conn)
+
 
 colacount, colcards = st.columns(2)
 
 with colacount:
     st.header("Wallets del Usuario")
     st.data_editor(
-    accountUser(number, conn),
+    accountUser(userid, conn),
     use_container_width=True,
     hide_index=True,
     num_rows="fixed"
@@ -140,15 +261,35 @@ with colacount:
 with colcards:
     st.header("Tarjetas del Usuario")
     st.data_editor(
-    cardsUser(number, conn),
+    cardsUser(userid, conn),
     use_container_width=True,
     hide_index=True,
     num_rows="fixed"
     )
 
+colveh, colpensions = st.columns(2)
 
-# Display the data in a table
-st.table(lastEdOperations(number, conn))
+with colveh:
+        st.header("Vehiculos del Usuario")
+        st.data_editor(vehicleUser(userid, conn))
+
+with colpensions:
+        st.header("Pensiones del Usuario")
+        st.data_editor(pensionsUser(userid, conn))
+
+
+
+st.header("Operaciones del Usuario en ED")
+st.data_editor(lastEdOperations(userid, conn, star_date, end_date))
+st.header("Operaciones del Usuario en PV")
+st.data_editor(lastPVOperations(userid, conn, star_date, end_date))
+
+
+st.header("Movimientos del Usuario")
+st.data_editor(movementsUser(number, conn))
+
+st.header("Errores del Usuario")
+st.data_editor(errorsUser(userid, conn))
 
 # Close the connection and tunnel when the app stops
 def cleanup():
