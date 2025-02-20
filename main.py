@@ -148,32 +148,48 @@ def vehicleUser(userid, _conn):
 @st.cache_data
 def lastEdOperations(userid, _conn, startDate=star_date, endDate=end_date):
     query = f'''
-        SELECT U.userid, U.phonenumber, T.transactionid, Z.parkinglotname,
-               T.subtotal, T.tax, T.fee, T.total, 
-               CASE
-                WHEN T.paymentType = 1 THEN 'NAP'
-                WHEN T.paymentType = 2 THEN 'SMS'
-                WHEN T.paymentType = 3 THEN 'TC/TD'
-                WHEN T.paymentType = 4 THEN 'SALDO'
-                WHEN T.paymentType = 5 THEN 'ATM'
-                ELSE ''
-                END AS paymentType,
-               TIMESTAMPDIFF(MINUTE, CONVERT_TZ(I.checkindate, 'UTC', 'America/Mexico_City'), 
-                         CONVERT_TZ(O.checkoutdate, 'UTC', 'America/Mexico_City')) AS paidtimeminutes,
-               CONVERT_TZ(T.paymentdate, 'UTC', 'America/Mexico_City') AS date,
-               CONVERT_TZ(I.checkindate, 'UTC', 'America/Mexico_City') AS checkindate, 
-               CONVERT_TZ(O.checkoutdate, 'UTC', 'America/Mexico_City') AS checkoutdate,
-               (CASE WHEN PQR.isvalidated = 1 THEN 'Validated'
-        WHEN PQR.isvalidated = 0 THEN 'No Validated' ELSE NULL END) AS promotionApplied,
-        PCAT.description AS promotiontype, (CASE WHEN PQR.status = 1 THEN 'Open Cicle' ELSE 'Close Cicle' END) AS status
-        FROM CARGOMOVIL_PD.PKM_SMART_QR_TRANSACTIONS T
-        JOIN CARGOMOVIL_PD.PKM_SMART_QR_CHECKIN I ON T.checkinid = I.id
-        JOIN CARGOMOVIL_PD.PKM_SMART_QR_CHECKOUT O ON T.checkoutid = O.id
-        JOIN CARGOMOVIL_PD.PKM_PARKING_LOT_CAT Z ON T.parkinglotid = Z.id
-        JOIN CARGOMOVIL_PD.SEC_USER_PROFILE U ON T.userid = U.userid
-        LEFT JOIN CARGOMOVIL_PD.PKM_SMART_QR_PROMOTIONS PP ON T.qrcodeid = PP.qrcodeid
-        LEFT JOIN CARGOMOVIL_PD.GEN_PROMOTION_TYPE_CAT PCAT ON PP.promotionid = PCAT.id
-        LEFT JOIN CARGOMOVIL_PD.PKM_SMART_QR PQR ON T.qrcodeid = PQR.id
+    SELECT 
+    U.phoneAreaCode AS LADA,
+    U.phonenumber AS PHONE,
+    T.qrCode AS TICKET,
+    CONVERT_TZ(I.checkindate, 'UTC', 'America/Mexico_City') AS ACCESO, 
+    CONVERT_TZ(O.checkoutdate, 'UTC', 'America/Mexico_City') AS SALIDA,
+    Z.parkinglotname AS ESTACIONAMIENTO,
+    (CASE WHEN PQR.status = 1 THEN 'Activo' ELSE 'Close' END) AS ESTATUS,
+    T.qrcode AS FOLIO,
+    T.total AS 'MONTO($)', 
+    CASE
+        WHEN T.paymentType = 1 THEN 'NAP'
+        WHEN T.paymentType = 2 THEN 'SMS'
+        WHEN T.paymentType = 3 THEN 'TC/TD'
+        WHEN T.paymentType = 4 THEN 'SALDO'
+        WHEN T.paymentType = 5 THEN 'ATM'
+        ELSE ''
+    END AS TIPO_PAGO,
+    (CASE 
+        WHEN PQR.isvalidated = 1 THEN 'Validated'
+        WHEN PQR.isvalidated = 0 THEN 'No Validated' 
+    END) AS VALIDADO,
+    PCAT.description AS TIPO_VALIDACION,
+    T.transactionid AS TRANSACTION_ID,   
+    U.userid AS USER_ID,  
+    T.subtotal AS 'SUBTOTAL($)', 
+    T.tax AS 'IMPUESTO($)', 
+    T.fee AS 'COMISION($)', 
+    TIMESTAMPDIFF(MINUTE, 
+        CONVERT_TZ(I.checkindate, 'UTC', 'America/Mexico_City'), 
+        CONVERT_TZ(O.checkoutdate, 'UTC', 'America/Mexico_City')
+    ) AS MINUTOS_PAGADOS,
+    CONVERT_TZ(T.paymentdate, 'UTC', 'America/Mexico_City') AS FECHA_PAGO
+                FROM CARGOMOVIL_PD.PKM_SMART_QR_TRANSACTIONS    T
+                JOIN CARGOMOVIL_PD.PKM_SMART_QR_CHECKIN         I ON T.checkinid = I.id
+                JOIN CARGOMOVIL_PD.PKM_SMART_QR_CHECKOUT        O ON T.checkoutid = O.id
+                JOIN CARGOMOVIL_PD.PKM_PARKING_LOT_CAT          Z ON T.parkinglotid = Z.id
+                JOIN CARGOMOVIL_PD.SEC_USER_PROFILE             U ON T.userid = U.userid
+                LEFT JOIN CARGOMOVIL_PD.PKM_SMART_QR_PROMOTIONS PP ON T.qrcodeid = PP.qrcodeid
+                LEFT JOIN CARGOMOVIL_PD.PKM_PROMOTION_CAT       PC ON PP.promotionid = PC.id
+                LEFT JOIN CARGOMOVIL_PD.GEN_PROMOTION_TYPE_CAT  PCAT ON PC.promotionTypeId = PCAT.id
+                LEFT JOIN CARGOMOVIL_PD.PKM_SMART_QR            PQR ON T.qrcodeid = PQR.id
         WHERE U.userid = {userid} AND T.paymentdate BETWEEN '{startDate}' AND '{endDate}'
         ORDER BY T.paymentdate DESC;
     '''
