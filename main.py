@@ -6,6 +6,7 @@ from sshtunnel import SSHTunnelForwarder
 import datetime
 import tempfile
 import os
+import plotly.express as px
 
 # Set Streamlit page configuration
 st.set_page_config(layout="wide", page_title="Kigo Costumer Service", page_icon="decorations/kigo-icon-adaptative.png")
@@ -20,6 +21,36 @@ st.markdown(
     """,
     unsafe_allow_html=True
 )
+
+dialogflow_html = """
+<link rel="stylesheet" href="https://www.gstatic.com/dialogflow-console/fast/df-messenger/prod/v1/themes/df-messenger-default.css">
+<script src="https://www.gstatic.com/dialogflow-console/fast/df-messenger/prod/v1/df-messenger.js"></script>
+<df-messenger
+  project-id="kigo-ai-customer-support"
+  agent-id="9914f7e8-fe6e-46ce-bdad-d13115af8a95"
+  language-code="es"
+  max-query-length="-1"
+  allow-feedback="all">
+  <df-messenger-chat-bubble
+   chat-title="agent-flow-2317">
+  </df-messenger-chat-bubble>
+</df-messenger>
+<style>
+  df-messenger {
+    z-index: 999;
+    position: fixed;
+    --df-messenger-font-color: #000;
+    --df-messenger-font-family: Google Sans;
+    --df-messenger-chat-background: #f3f6fc;
+    --df-messenger-message-user-background: #d3e3fd;
+    --df-messenger-message-bot-background: #fff;
+    bottom: 16px;
+    right: 16px;
+  }
+</style>
+"""
+
+st.html(dialogflow_html)
 
 # Load the private key from Streamlit secrets
 pem_key = st.secrets['pem']['private_key']
@@ -97,6 +128,7 @@ def create_db_connection(_tunnel):
 tunnel = create_ssh_tunnel()
 conn = create_db_connection(tunnel)
 
+# Obtain the userid from the phone number provide in number variable
 @st.cache_data
 def useridLocate(phonenumber, _conn):
     query = f'''
@@ -107,7 +139,7 @@ def useridLocate(phonenumber, _conn):
     return pd.read_sql_query(query, _conn)
 
 userid = useridLocate(number, conn)
-userid = userid.values[0][0]
+userid = userid.values[0][0]                # obtain a int value to work in the query
 
 @st.cache_data
 def accountUser(userid, _conn):
@@ -148,7 +180,7 @@ def vehicleUser(userid, _conn):
 @st.cache_data
 def lastEdOperations(userid, _conn, startDate=star_date, endDate=end_date):
     query = f'''
-        SELECT U.userid, U.phonenumber, T.transactionid, Z.parkinglotname,
+        SELECT U.userid, U.phonenumber, T.qrcode, T.transactionid, Z.parkinglotname,
                T.subtotal, T.tax, T.fee, T.total, 
                CASE
                 WHEN T.paymentType = 1 THEN 'NAP'
@@ -284,9 +316,30 @@ st.data_editor(lastEdOperations(userid, conn, star_date, end_date))
 st.header("Operaciones del Usuario en PV")
 st.data_editor(lastPVOperations(userid, conn, star_date, end_date))
 
-
 st.header("Movimientos del Usuario")
-st.data_editor(movementsUser(number, conn))
+movements_data = movementsUser(number, conn)
+st.data_editor(movements_data)
+
+# Bar plot
+fig = px.line(
+    movements_data,
+    x="TRANSACTIOND_DATE",
+    y="FINAL_FUNDS",
+    title="Wallet del Usuario",
+    labels={"TRANSACTIOND_DATE": "Fecha de Movimiento", "FINAL_FUNDS": "Fondos Finales"},
+    height=400
+)
+
+# Update bar colors based on the condition
+fig.update_traces(
+    marker_color=[
+        "green" if funds >= 0 else "crimson" for funds in movements_data["FINAL_FUNDS"]
+    ]
+)
+
+# Display the plot in Streamlit
+st.plotly_chart(fig, use_container_width=True)
+
 
 st.header("Errores del Usuario")
 st.data_editor(errorsUser(userid, conn))
