@@ -7,6 +7,7 @@ import datetime
 import tempfile
 import os
 import plotly.express as px
+import streamlit.components.v1 as components
 
 # Set Streamlit page configuration
 st.set_page_config(layout="wide", page_title="Kigo Costumer Service", page_icon="decorations/kigo-icon-adaptative.png")
@@ -37,7 +38,7 @@ dialogflow_html = """
 </df-messenger>
 <style>
   df-messenger {
-    z-index: 999;
+    z-index: 9999 !important;
     position: fixed;
     --df-messenger-font-color: #000;
     --df-messenger-font-family: Google Sans;
@@ -49,8 +50,6 @@ dialogflow_html = """
   }
 </style>
 """
-
-st.html(dialogflow_html)
 
 # Load the private key from Streamlit secrets
 pem_key = st.secrets['pem']['private_key']
@@ -343,6 +342,9 @@ st.plotly_chart(fig, use_container_width=True)
 
 st.header("Errores del Usuario")
 st.data_editor(errorsUser(userid, conn))
+
+# Call to Dialogflow Agent
+components.html(dialogflow_html, height=700, scrolling=True)
 
 # Close the connection and tunnel when the app stops
 def cleanup():
