@@ -92,12 +92,7 @@ with coldate:
     star_date = f'{d[0]} 00:00:00'
     end_date = f'{d[1]} 23:59:59'
 
-with colphone:
-    # Phone number for the query
-    number = st.number_input("Ingresar el número del Usuario:",
-                         value=2213500061,
-                         step=1,
-                         format="%d")
+
 
 # Cache the SSH tunnel
 @st.cache_resource
@@ -130,15 +125,41 @@ conn = create_db_connection(tunnel)
 # Obtain the userid from the phone number provide in number variable
 @st.cache_data
 def useridLocate(phonenumber, _conn):
-    query = f'''
-    SELECT userid
-    FROM CARGOMOVIL_PD.SEC_USER_PROFILE
-    WHERE phonenumber = {phonenumber};
-    '''
-    return pd.read_sql_query(query, _conn)
+    try:
+        query = f'''
+        SELECT userid
+        FROM CARGOMOVIL_PD.SEC_USER_PROFILE
+        WHERE phonenumber = '{phonenumber}';
+        '''
 
-userid = useridLocate(number, conn)
-userid = userid.values[0][0]                # obtain a int value to work in the query
+        df = pd.read_sql_query(query, _conn)
+
+        if not df.empty:
+            return df['userid'].iloc[0]
+
+        else:
+            print("User id not found for the provided phone number.")
+            return None
+
+    except Exception as e:
+        print(f"An error occurred: {e}")
+        print("Number not found or database error")
+        return None
+
+with colphone:
+    default_phone = 000000000
+    # Phone number for the query
+    number = st.number_input("Ingresar el número del Usuario:",
+                         value=default_phone,
+                         step=1,
+                         format="%d")
+
+    if number:
+        userid = useridLocate(number, conn)
+        if userid:
+            st.success(f"Usuario encontrado: {userid}")
+        else:
+            st.error("Usuario no encontrado.")
 
 @st.cache_data
 def accountUser(userid, _conn):
