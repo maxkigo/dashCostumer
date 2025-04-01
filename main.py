@@ -77,22 +77,6 @@ ssh_host = st.secrets["ssh"]["ssh_host"]
 ssh_user = st.secrets["ssh"]["ssh_user"]
 ssh_port = st.secrets["ssh"]["ssh_port"]
 
-coldate, colphone = st.columns(2)
-
-with coldate:
-
-    # Date input for the query
-    d = st.date_input("Fecha de Consulta",
-                  value=[datetime.date(2024, 1, 1), datetime.date.today()],
-                  min_value=datetime.date(2024, 1, 1),
-                  max_value=datetime.date.today(),
-                  format="DD/MM/YYYY")
-    d
-
-    star_date = f'{d[0]} 00:00:00'
-    end_date = f'{d[1]} 23:59:59'
-
-
 
 # Cache the SSH tunnel
 @st.cache_resource
@@ -106,6 +90,7 @@ def create_ssh_tunnel():
     tunnel.start()
     return tunnel
 
+
 # Cache the database connection
 @st.cache_resource
 def create_db_connection(_tunnel):
@@ -118,260 +103,359 @@ def create_db_connection(_tunnel):
     )
     return conn
 
-# Create SSH tunnel and database connection
-tunnel = create_ssh_tunnel()
-conn = create_db_connection(tunnel)
 
-# Obtain the userid from the phone number provide in number variable
+# Create SSH tunnel and database connection
+try:
+    tunnel = create_ssh_tunnel()
+    conn = create_db_connection(tunnel)
+except Exception as e:
+    st.error(f"No se pudo establecer la conexión con la base de datos: {str(e)}")
+    st.stop()
+
+coldate, colphone = st.columns(2)
+
+with coldate:
+    # Date input for the query
+    d = st.date_input("Fecha de Consulta",
+                      value=[datetime.date(2024, 1, 1), datetime.date.today()],
+                      min_value=datetime.date(2024, 1, 1),
+                      max_value=datetime.date.today(),
+                      format="DD/MM/YYYY")
+
+    if len(d) == 2:
+        start_date = f'{d[0]} 00:00:00'
+        end_date = f'{d[1]} 23:59:59'
+    else:
+        st.warning("Por favor seleccione un rango de fechas válido")
+        st.stop()
+
+with colphone:
+    default_phone = 000000000
+    # Phone number for the query
+    number = st.number_input("Ingresar el número del Usuario:",
+                             value=default_phone,
+                             step=1,
+                             format="%d")
+
+
+# Obtain the userid from the phone number
 @st.cache_data
 def useridLocate(phonenumber, _conn):
+    if not phonenumber or phonenumber == default_phone:
+        return None
+
     try:
         query = f'''
         SELECT userid
         FROM CARGOMOVIL_PD.SEC_USER_PROFILE
         WHERE phonenumber = '{phonenumber}';
         '''
-
         df = pd.read_sql_query(query, _conn)
-
-        if not df.empty:
-            return df['userid'].iloc[0]
-
-        else:
-            print("User id not found for the provided phone number.")
-            return None
-
+        return df['userid'].iloc[0] if not df.empty else None
     except Exception as e:
-        print(f"An error occurred: {e}")
-        print("Number not found or database error")
+        st.error(f"Error al buscar el usuario: {str(e)}")
         return None
 
-with colphone:
-    default_phone = 000000000
-    # Phone number for the query
-    number = st.number_input("Ingresar el número del Usuario:",
-                         value=default_phone,
-                         step=1,
-                         format="%d")
 
-    if number:
-        userid = useridLocate(number, conn)
-        if userid:
-            st.success(f"Usuario encontrado: {userid}")
-        else:
-            st.error("Usuario no encontrado.")
+if number and number != default_phone:
+    userid = useridLocate(number, conn)
+
+    if userid is None:
+        st.error("Usuario no encontrado. Por favor verifique el número telefónico.")
+        st.stop()
+    else:
+        st.success(f"Usuario encontrado: {userid}")
+else:
+    st.warning("Por favor ingrese un número telefónico válido")
+    st.stop()
+
 
 @st.cache_data
 def accountUser(userid, _conn):
-    query = f'''
-        SELECT UP.firstname AS nombre, UP.lastname AS apellido, UP.phonenumber, UP.facebookemail, CDU.funds, CDU.currency
-        FROM CARGOMOVIL_PD.CDX_USER_ACCOUNT CDU
-        JOIN CARGOMOVIL_PD.SEC_USER_PROFILE UP ON CDU.userid = UP.userid
-        WHERE UP.userid = {userid};
-    '''
-    return pd.read_sql_query(query, _conn)
+    try:
+        query = f'''
+            SELECT UP.firstname AS nombre, UP.lastname AS apellido, UP.phonenumber AS telefono, 
+                   UP.facebookemail AS email, CDU.funds AS fondos, CDU.currency AS moneda
+            FROM CARGOMOVIL_PD.CDX_USER_ACCOUNT CDU
+            JOIN CARGOMOVIL_PD.SEC_USER_PROFILE UP ON CDU.userid = UP.userid
+            WHERE UP.userid = {userid};
+        '''
+        return pd.read_sql_query(query, _conn)
+    except Exception as e:
+        st.error(f"Error al obtener información de la cuenta: {str(e)}")
+        return pd.DataFrame()
+
 
 @st.cache_data
 def cardsUser(userid, _conn):
-    query = f'''
-    SELECT UP.phonenumber, SQ_UC.brand, SQ_UC.last_4, SQ_UC.card_status, 
-    SQ_UC.gateway, SQ_UC.creation_date 
-    FROM CARGOMOVIL_PD.uc_users_cards SQ_UC
-    JOIN CARGOMOVIL_PD.SEC_USER_PROFILE UP ON SQ_UC.user_id = UP.userid
-    WHERE UP.userid = {userid};
-    '''
-    return pd.read_sql_query(query, _conn)
+    try:
+        query = f'''
+        SELECT SQ_UC.brand AS 'marca', SQ_UC.last_4, SQ_UC.card_status AS status, SQ_UC.creation_date 
+        FROM CARGOMOVIL_PD.uc_users_cards SQ_UC
+        JOIN CARGOMOVIL_PD.SEC_USER_PROFILE UP ON SQ_UC.user_id = UP.userid
+        WHERE UP.userid = {userid};
+        '''
+        return pd.read_sql_query(query, _conn)
+    except Exception as e:
+        st.error(f"Error al obtener información de tarjetas: {str(e)}")
+        return pd.DataFrame()
+
 
 @st.cache_data
 def vehicleUser(userid, _conn):
-    query = f'''
-    SELECT V.ownerid AS userid, V.licenseplate, (CASE WHEN V.status = 1 THEN 'active' ELSE 'inactive' END) AS status,
-    O.modelname, U.brandname
-    FROM CARGOMOVIL_PD.PKM_VEHICLE V
-    JOIN CARGOMOVIL_PD.PKM_VEHICLE_MODELS_CAT O ON V.modelid = O.id 
-    JOIN CARGOMOVIL_PD.PKM_VEHICLE_BRANDS_CAT U ON O.brandid = U.id
-    WHERE V.ownerid = {userid}
-    ORDER BY status
-    ;
-    '''
-    return pd.read_sql_query(query, _conn)
+    try:
+        query = f'''
+        SELECT V.licenseplate, (CASE WHEN V.status = 1 THEN 'active' ELSE 'inactive' END) AS status,
+        O.modelname AS modelo, U.brandname AS marca
+        FROM CARGOMOVIL_PD.PKM_VEHICLE V
+        JOIN CARGOMOVIL_PD.PKM_VEHICLE_MODELS_CAT O ON V.modelid = O.id 
+        JOIN CARGOMOVIL_PD.PKM_VEHICLE_BRANDS_CAT U ON O.brandid = U.id
+        WHERE V.ownerid = {userid}
+        ORDER BY status;
+        '''
+        return pd.read_sql_query(query, _conn)
+    except Exception as e:
+        st.error(f"Error al obtener información de vehículos: {str(e)}")
+        return pd.DataFrame()
 
 
 @st.cache_data
-def lastEdOperations(userid, _conn, startDate=star_date, endDate=end_date):
-    query = f'''
-        SELECT U.userid, U.phonenumber, T.qrcode, T.transactionid, Z.parkinglotname,
-               T.subtotal, T.tax, T.fee, T.total, 
-               CASE
-                WHEN T.paymentType = 1 THEN 'NAP'
-                WHEN T.paymentType = 2 THEN 'SMS'
-                WHEN T.paymentType = 3 THEN 'TC/TD'
-                WHEN T.paymentType = 4 THEN 'SALDO'
-                WHEN T.paymentType = 5 THEN 'ATM'
-                ELSE ''
-                END AS paymentType,
-               TIMESTAMPDIFF(MINUTE, CONVERT_TZ(I.checkindate, 'UTC', 'America/Mexico_City'), 
-                         CONVERT_TZ(O.checkoutdate, 'UTC', 'America/Mexico_City')) AS paidtimeminutes,
-               CONVERT_TZ(T.paymentdate, 'UTC', 'America/Mexico_City') AS date,
-               CONVERT_TZ(I.checkindate, 'UTC', 'America/Mexico_City') AS checkindate, 
-               CONVERT_TZ(O.checkoutdate, 'UTC', 'America/Mexico_City') AS checkoutdate,
-               (CASE WHEN PQR.isvalidated = 1 THEN 'Validated'
-        WHEN PQR.isvalidated = 0 THEN 'No Validated' ELSE NULL END) AS promotionApplied,
-        PCAT.description AS promotiontype, (CASE WHEN PQR.status = 1 THEN 'Open Cicle' ELSE 'Close Cicle' END) AS status
-        FROM CARGOMOVIL_PD.PKM_SMART_QR_TRANSACTIONS T
-        JOIN CARGOMOVIL_PD.PKM_SMART_QR_CHECKIN I ON T.checkinid = I.id
-        JOIN CARGOMOVIL_PD.PKM_SMART_QR_CHECKOUT O ON T.checkoutid = O.id
-        JOIN CARGOMOVIL_PD.PKM_PARKING_LOT_CAT Z ON T.parkinglotid = Z.id
-        JOIN CARGOMOVIL_PD.SEC_USER_PROFILE U ON T.userid = U.userid
-        LEFT JOIN CARGOMOVIL_PD.PKM_SMART_QR_PROMOTIONS PP ON T.qrcodeid = PP.qrcodeid
-        LEFT JOIN CARGOMOVIL_PD.GEN_PROMOTION_TYPE_CAT PCAT ON PP.promotionid = PCAT.id
-        LEFT JOIN CARGOMOVIL_PD.PKM_SMART_QR PQR ON T.qrcodeid = PQR.id
-        WHERE U.userid = {userid} AND T.paymentdate BETWEEN '{startDate}' AND '{endDate}'
-        ORDER BY T.paymentdate DESC;
-    '''
-    return pd.read_sql_query(query, _conn)
+def lastEdOperations(userid, _conn, startDate, endDate):
+    try:
+        query = f'''
+            SELECT U.phonenumber AS 'Teléfono', Z.parkinglotname AS 'Estacionamiento',
+             (CASE WHEN PQR.status = 1 THEN 'Open Cicle' ELSE 'Close Cicle' END) AS status,
+                   T.subtotal, T.tax, T.fee, T.total, T.qrcode,  
+                   CASE
+                    WHEN T.paymentType = 1 THEN 'NAP'
+                    WHEN T.paymentType = 2 THEN 'SMS'
+                    WHEN T.paymentType = 3 THEN 'TC/TD'
+                    WHEN T.paymentType = 4 THEN 'SALDO'
+                    WHEN T.paymentType = 5 THEN 'ATM'
+                    ELSE ''
+                    END AS 'Método de Pago',
+                   TIMESTAMPDIFF(MINUTE, CONVERT_TZ(I.checkindate, 'UTC', 'America/Mexico_City'), 
+                             CONVERT_TZ(O.checkoutdate, 'UTC', 'America/Mexico_City')) AS 'Minutos Pagados',
+                   CONVERT_TZ(I.checkindate, 'UTC', 'America/Mexico_City') AS 'Entrada', 
+                   CONVERT_TZ(O.checkoutdate, 'UTC', 'America/Mexico_City') AS 'Salida',
+                   CONVERT_TZ(T.paymentdate, 'UTC', 'America/Mexico_City') AS 'Fecha de Pago',
+                   (CASE WHEN PQR.isvalidated = 1 THEN 'Validated'
+            WHEN PQR.isvalidated = 0 THEN 'No Validated' ELSE NULL END) AS 'Promoción Aplicada',
+            PCAT.description AS 'Tipo de Promoción',
+            T.transactionid
+            FROM CARGOMOVIL_PD.PKM_SMART_QR_TRANSACTIONS T
+            JOIN CARGOMOVIL_PD.PKM_SMART_QR_CHECKIN I ON T.checkinid = I.id
+            JOIN CARGOMOVIL_PD.PKM_SMART_QR_CHECKOUT O ON T.checkoutid = O.id
+            JOIN CARGOMOVIL_PD.PKM_PARKING_LOT_CAT Z ON T.parkinglotid = Z.id
+            JOIN CARGOMOVIL_PD.SEC_USER_PROFILE U ON T.userid = U.userid
+            LEFT JOIN CARGOMOVIL_PD.PKM_SMART_QR_PROMOTIONS PP ON T.qrcodeid = PP.qrcodeid
+            LEFT JOIN CARGOMOVIL_PD.GEN_PROMOTION_TYPE_CAT PCAT ON PP.promotionid = PCAT.id
+            LEFT JOIN CARGOMOVIL_PD.PKM_SMART_QR PQR ON T.qrcodeid = PQR.id
+            WHERE U.userid = {userid} AND T.paymentdate BETWEEN '{startDate}' AND '{endDate}'
+            ORDER BY T.paymentdate DESC;
+        '''
+        return pd.read_sql_query(query, _conn)
+    except Exception as e:
+        st.error(f"Error al obtener operaciones en ED: {str(e)}")
+        return pd.DataFrame()
+
 
 @st.cache_data
 def movementsUser(phonenumber, _conn):
-    query = f'''
-    CALL usp_metabase_user_account_movements(
-      2,
-     NULL,
-     NULL,
-     '{phonenumber}'  --  = El número que introducen
-   ,NULL);
-    '''
-    return pd.read_sql_query(query, _conn)
+    try:
+        query = f'''
+        CALL usp_metabase_user_account_movements(
+          2,
+         NULL,
+         NULL,
+         '{phonenumber}',
+         NULL);
+        '''
+        return pd.read_sql_query(query, _conn)
+    except Exception as e:
+        st.error(f"Error al obtener movimientos: {str(e)}")
+        return pd.DataFrame()
+
 
 @st.cache_data
-def lastPVOperations(userid, _conn, startDate=star_date, endDate=end_date):
-    query = f'''
-    SELECT U.userid, U.phonenumber, 
-    CASE
-                WHEN T.paymentType = 1 THEN 'NAP'
-                WHEN T.paymentType = 2 THEN 'SMS'
-                WHEN T.paymentType = 3 THEN 'TC/TD'
-                WHEN T.paymentType = 4 THEN 'SALDO'
-                WHEN T.paymentType = 5 THEN 'ATM'
-                ELSE ''
-                END AS paymentType,
-    T.licenseplate, T.transactionid, Z.name, T.totalamount
-    FROM CARGOMOVIL_PD.PKM_TRANSACTION T
-    JOIN CARGOMOVIL_PD.SEC_USER_PROFILE U ON T.userid = U.userid
-    JOIN CARGOMOVIL_PD.PKM_PARKING_METER_ZONE_CAT Z ON T.zoneid = Z.id
-    WHERE U.userid = {userid} AND T.date BETWEEN '{startDate}' AND '{endDate}'
-    '''
-    return pd.read_sql_query(query, _conn)
+def lastPVOperations(userid, _conn, startDate, endDate):
+    try:
+        query = f'''
+        SELECT U.phonenumber AS 'Teléfono', 
+        CASE
+                    WHEN T.paymentType = 1 THEN 'NAP'
+                    WHEN T.paymentType = 2 THEN 'SMS'
+                    WHEN T.paymentType = 3 THEN 'TC/TD'
+                    WHEN T.paymentType = 4 THEN 'SALDO'
+                    WHEN T.paymentType = 5 THEN 'ATM'
+                    ELSE ''
+                    END AS 'Método de Pago',
+        T.licenseplate AS Placa, Z.name AS Parquimetro, T.totalamount AS Pago, T.transactionid
+        FROM CARGOMOVIL_PD.PKM_TRANSACTION T
+        JOIN CARGOMOVIL_PD.SEC_USER_PROFILE U ON T.userid = U.userid
+        JOIN CARGOMOVIL_PD.PKM_PARKING_METER_ZONE_CAT Z ON T.zoneid = Z.id
+        WHERE U.userid = {userid} AND T.date BETWEEN '{startDate}' AND '{endDate}'
+        '''
+        return pd.read_sql_query(query, _conn)
+    except Exception as e:
+        st.error(f"Error al obtener operaciones en PV: {str(e)}")
+        return pd.DataFrame()
+
 
 @st.cache_data
 def pensionsUser(userid, _conn):
-    query = f'''
-    SELECT Z.parkinglotname, pp.phonenumber, pp.startdate, pp.enddate, pp.status, pp.description
-    FROM CARGOMOVIL_PD.PKM_PARKING_LOT_LODGINGS pp
-    JOIN CARGOMOVIL_PD.PKM_PARKING_LOT_CAT Z ON pp.parkinglotid = Z.id
-    WHERE pp.userid = {userid}
-    '''
-    return pd.read_sql_query(query, _conn)
+    try:
+        query = f'''
+        SELECT Z.parkinglotname, pp.phonenumber, pp.startdate, pp.enddate, pp.status, pp.description
+        FROM CARGOMOVIL_PD.PKM_PARKING_LOT_LODGINGS pp
+        JOIN CARGOMOVIL_PD.PKM_PARKING_LOT_CAT Z ON pp.parkinglotid = Z.id
+        WHERE pp.userid = {userid}
+        '''
+        return pd.read_sql_query(query, _conn)
+    except Exception as e:
+        st.error(f"Error al obtener información de pensiones: {str(e)}")
+        return pd.DataFrame()
+
 
 @st.cache_data
-def errorsUser(userid, _conn):
-    query = f'''
-    SELECT 
-    e.id AS log_id,
-    p.parkinglotname AS parking_name,
-    e.userid AS user_id,
-    JSON_UNQUOTE(JSON_EXTRACT(e.metadata, '$.user.username')) AS username,
-    e.eventtype AS event_type,
-    JSON_UNQUOTE(JSON_EXTRACT(e.metadata, '$.qrCode')) AS qrcode,
-    JSON_EXTRACT(e.metadata, '$.error.code') AS error_code,
-    JSON_EXTRACT(e.metadata, '$.error.status') AS error_status,
-    JSON_UNQUOTE(JSON_EXTRACT(e.metadata, '$.error.message')) AS error_message,
-    JSON_EXTRACT(e.metadata, '$.gateId') AS gate_id,
-    e.eventtimestamp AS error_date
-FROM 
-    CARGOMOVIL_PD.PKM_PARKING_LOT_EVENTS e
-JOIN 
-    CARGOMOVIL_PD.PKM_PARKING_LOT_CAT p ON e.parkinglotid = p.id
-WHERE 
-    e.eventtype LIKE '%error%' 
-    AND e.userid = {userid}
-    AND e.eventtimestamp BETWEEN '{star_date}' AND '{end_date}'; 
-    '''
-    return pd.read_sql_query(query, _conn)
+def errorsUser(userid, _conn, start_date, end_date):
+    try:
+        query = f'''
+        SELECT 
+        e.id AS log_id,
+        p.parkinglotname AS parking_name,
+        e.userid AS user_id,
+        JSON_UNQUOTE(JSON_EXTRACT(e.metadata, '$.user.username')) AS username,
+        e.eventtype AS event_type,
+        JSON_UNQUOTE(JSON_EXTRACT(e.metadata, '$.qrCode')) AS qrcode,
+        JSON_EXTRACT(e.metadata, '$.error.code') AS error_code,
+        JSON_EXTRACT(e.metadata, '$.error.status') AS error_status,
+        JSON_UNQUOTE(JSON_EXTRACT(e.metadata, '$.error.message')) AS error_message,
+        JSON_EXTRACT(e.metadata, '$.gateId') AS gate_id,
+        e.eventtimestamp AS error_date
+        FROM 
+            CARGOMOVIL_PD.PKM_PARKING_LOT_EVENTS e
+        JOIN 
+            CARGOMOVIL_PD.PKM_PARKING_LOT_CAT p ON e.parkinglotid = p.id
+        WHERE 
+            e.eventtype LIKE '%error%' 
+            AND e.userid = {userid}
+            AND e.eventtimestamp BETWEEN '{start_date}' AND '{end_date}'; 
+        '''
+        return pd.read_sql_query(query, _conn)
+    except Exception as e:
+        st.error(f"Error al obtener registros de errores: {str(e)}")
+        return pd.DataFrame()
 
 
-colacount, colcards = st.columns(2)
+# Mostrar información solo si tenemos un userid válido
+if userid:
+    colacount, colcards = st.columns(2)
 
-with colacount:
-    st.header("Wallets del Usuario")
-    st.data_editor(
-    accountUser(userid, conn),
-    use_container_width=True,
-    hide_index=True,
-    num_rows="fixed"
-    )
-with colcards:
-    st.header("Tarjetas del Usuario")
-    st.data_editor(
-    cardsUser(userid, conn),
-    use_container_width=True,
-    hide_index=True,
-    num_rows="fixed"
-    )
+    with colacount:
+        st.header("Wallets del Usuario")
+        account_data = accountUser(userid, conn)
+        if not account_data.empty:
+            st.data_editor(
+                account_data,
+                use_container_width=True,
+                hide_index=True,
+                num_rows="fixed"
+            )
+        else:
+            st.warning("No se encontró información de wallet para este usuario")
 
-colveh, colpensions = st.columns(2)
+    with colcards:
+        st.header("Tarjetas del Usuario")
+        cards_data = cardsUser(userid, conn)
+        if not cards_data.empty:
+            st.data_editor(
+                cards_data,
+                use_container_width=True,
+                hide_index=True,
+                num_rows="fixed"
+            )
+        else:
+            st.warning("No se encontraron tarjetas registradas para este usuario")
 
-with colveh:
-        st.header("Vehiculos del Usuario")
-        st.data_editor(vehicleUser(userid, conn))
+    colveh, colpensions = st.columns(2)
 
-with colpensions:
+    with colveh:
+        st.header("Vehículos del Usuario")
+        vehicles_data = vehicleUser(userid, conn)
+        if not vehicles_data.empty:
+            st.data_editor(vehicles_data)
+        else:
+            st.warning("No se encontraron vehículos registrados para este usuario")
+
+    with colpensions:
         st.header("Pensiones del Usuario")
-        st.data_editor(pensionsUser(userid, conn))
+        pensions_data = pensionsUser(userid, conn)
+        if not pensions_data.empty:
+            st.data_editor(pensions_data)
+        else:
+            st.warning("No se encontraron pensiones registradas para este usuario")
 
+    st.header("Operaciones del Usuario en ED")
+    ed_operations = lastEdOperations(userid, conn, start_date, end_date)
+    if not ed_operations.empty:
+        st.data_editor(ed_operations)
+    else:
+        st.warning(f"No se encontraron operaciones en ED para este usuario en el rango de fechas seleccionado")
 
+    st.header("Operaciones del Usuario en PV")
+    pv_operations = lastPVOperations(userid, conn, start_date, end_date)
+    if not pv_operations.empty:
+        st.data_editor(pv_operations)
+    else:
+        st.warning(f"No se encontraron operaciones en PV para este usuario en el rango de fechas seleccionado")
 
-st.header("Operaciones del Usuario en ED")
-st.data_editor(lastEdOperations(userid, conn, star_date, end_date))
-st.header("Operaciones del Usuario en PV")
-st.data_editor(lastPVOperations(userid, conn, star_date, end_date))
+    st.header("Movimientos del Usuario")
+    movements_data = movementsUser(number, conn)
+    if not movements_data.empty:
+        st.data_editor(movements_data)
 
-st.header("Movimientos del Usuario")
-movements_data = movementsUser(number, conn)
-st.data_editor(movements_data)
+        # Gráfico de movimientos
+        fig = px.line(
+            movements_data,
+            x="TRANSACTIOND_DATE",
+            y="FINAL_FUNDS",
+            title="Wallet del Usuario",
+            labels={"TRANSACTIOND_DATE": "Fecha de Movimiento", "FINAL_FUNDS": "Fondos Finales"},
+            height=400
+        )
+        fig.update_traces(
+            marker_color=[
+                "green" if funds >= 0 else "crimson" for funds in movements_data["FINAL_FUNDS"]
+            ]
+        )
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.warning("No se encontraron movimientos para este usuario")
 
-# Bar plot
-fig = px.line(
-    movements_data,
-    x="TRANSACTIOND_DATE",
-    y="FINAL_FUNDS",
-    title="Wallet del Usuario",
-    labels={"TRANSACTIOND_DATE": "Fecha de Movimiento", "FINAL_FUNDS": "Fondos Finales"},
-    height=400
-)
-
-# Update bar colors based on the condition
-fig.update_traces(
-    marker_color=[
-        "green" if funds >= 0 else "crimson" for funds in movements_data["FINAL_FUNDS"]
-    ]
-)
-
-# Display the plot in Streamlit
-st.plotly_chart(fig, use_container_width=True)
-
-
-st.header("Errores del Usuario")
-st.data_editor(errorsUser(userid, conn))
+    st.header("Errores del Usuario")
+    errors_data = errorsUser(userid, conn, start_date, end_date)
+    if not errors_data.empty:
+        st.data_editor(errors_data)
+    else:
+        st.warning("No se encontraron registros de errores para este usuario en el rango de fechas seleccionado")
 
 # Call to Dialogflow Agent
 components.html(dialogflow_html, height=700, scrolling=True)
 
+
 # Close the connection and tunnel when the app stops
 def cleanup():
-    conn.close()
-    tunnel.stop()
+    try:
+        if 'conn' in globals() and conn:
+            conn.close()
+        if 'tunnel' in globals() and tunnel:
+            tunnel.stop()
+    except:
+        pass
+
 
 # Register the cleanup function to run when the app stops
 import atexit
+
 atexit.register(cleanup)
