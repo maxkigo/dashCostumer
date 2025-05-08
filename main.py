@@ -28,25 +28,26 @@ dialogflow_html = """
 <script src="https://www.gstatic.com/dialogflow-console/fast/df-messenger/prod/v1/df-messenger.js"></script>
 <df-messenger
   project-id="kigo-ai-customer-support"
-  agent-id="9914f7e8-fe6e-46ce-bdad-d13115af8a95"
+  agent-id="a6f52763-f642-4c75-838a-94402118179d"
   language-code="es"
-  max-query-length="-1"
-  allow-feedback="all">
-  <df-messenger-chat-bubble
-   chat-title="agent-flow-2317">
-  </df-messenger-chat-bubble>
+  max-query-length="-1">
+  <df-messenger-chat
+    chat-title="KIGO AI Customer Support">
+  </df-messenger-chat>
 </df-messenger>
 <style>
   df-messenger {
-    z-index: 9999 !important;
+    z-index: 999;
     position: fixed;
     --df-messenger-font-color: #000;
     --df-messenger-font-family: Google Sans;
     --df-messenger-chat-background: #f3f6fc;
     --df-messenger-message-user-background: #d3e3fd;
     --df-messenger-message-bot-background: #fff;
-    bottom: 16px;
-    right: 16px;
+    bottom: 0;
+    right: 0;
+    top: 0;
+    width: 350px;
   }
 </style>
 """
@@ -76,6 +77,21 @@ sql_port = st.secrets["database"]["sql_port"]
 ssh_host = st.secrets["ssh"]["ssh_host"]
 ssh_user = st.secrets["ssh"]["ssh_user"]
 ssh_port = st.secrets["ssh"]["ssh_port"]
+
+
+# Conexión estándar (sin SSH)
+@st.cache_resource
+def create_rds_connection():
+    try:
+        return pymysql.connect(
+            host=st.secrets["rds_geosek"]["host_geosek"],
+            user=st.secrets["rds_geosek"]["user_geosek"],
+            password=st.secrets["rds_geosek"]["pass_geosek"],
+            port=st.secrets["rds_geosek"]["port_geosek"]
+        )
+    except Exception as e:
+        st.error(f"No se pudo establecer la conexión con RDS: {str(e)}")
+        return None
 
 
 # Cache the SSH tunnel
@@ -217,6 +233,52 @@ def vehicleUser(userid, _conn):
     except Exception as e:
         st.error(f"Error al obtener información de vehículos: {str(e)}")
         return pd.DataFrame()
+
+#
+@st.cache_data
+def obtener_usuarios_rds(number, _conn):
+    """
+    Fetches user data from a remote RDS database using a provided connection and user number.
+
+    This function runs a database query to retrieve user records where the 'user'
+    field matches the provided number. It returns the query results or an empty list
+    if an error occurs during the process.
+
+    :param number: User identifier to filter the query.
+    :type number: str
+    :param _conn: Database connection object used for executing the query.
+    :type _conn: Any
+    :return: A list containing the queried user data or an empty list in case of an error.
+    :rtype: list
+    """
+    try:
+        with _conn.cursor() as cursor:
+            query = f'''
+            SELECT L.user AS 'Teléfono', R.alias AS 'Proyecto', L.date AS 'Fechas Acceso', R.name AS 'Acceso'
+            FROM RASPIS.log_sek L
+            JOIN RASPIS.raspis R ON L.QR = R.qr
+            WHERE user LIKE '{number}'
+            LIMIT 1
+            '''
+
+            cursor.execute(query)
+            result = cursor.fetchall()
+        return result
+    except Exception as e:
+        st.error(f"Error al consultar datos en RDS: {str(e)}")
+        return []
+
+# Establecer la conexión a RDS
+rds_connection = create_rds_connection()
+
+if rds_connection:
+    datos_usuarios = obtener_usuarios_rds(number, rds_connection)
+
+    if datos_usuarios:
+        st.data_editor(datos_usuarios)
+    else:
+        st.warning("No se encontraron datos o ocurrió un error al ejecutar la consulta")
+
 
 
 @st.cache_data
